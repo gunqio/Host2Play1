@@ -2,184 +2,71 @@ name: Host2Play 续期
 
 on:
   schedule:
-    - cron: '0 */3 * * *'
-    
+    - cron: '30 5,16 * * *'      # 触发点: 05:30, 16:30
   workflow_dispatch:
 
 permissions:
   actions: write
-  contents: write
-
-# 防止多个定时任务同时运行导致 git push 冲突
-concurrency:
-  group: host2play-renew
-  cancel-in-progress: false
+  contents: read
 
 jobs:
   run-renew:
     name: 执行脚本
     runs-on: ubuntu-latest
 
-    timeout-minutes: 60
-
     steps:
-      # =========================================================
-      # Checkout
-      # =========================================================
       - name: 拉取仓库
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      # =========================================================
-      # Python
-      # =========================================================
       - name: 配置 Python 环境
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      # =========================================================
-      # 系统依赖
-      # =========================================================
       - name: 安装系统依赖
         run: |
           sudo apt-get update
+          sudo apt-get install -y xvfb ffmpeg unzip curl
+          wget -q -O /tmp/google-chrome-stable_current_amd64.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+          sudo dpkg -i /tmp/google-chrome-stable_current_amd64.deb || sudo apt-get install -f -y
 
-          sudo apt-get install -y \
-            xvfb \
-            ffmpeg \
-            unzip \
-            curl \
-            wget \
-            jq \
-            ca-certificates \
-            fonts-liberation \
-            libasound2t64 \
-            libatk-bridge2.0-0t64 \
-            libatk1.0-0t64 \
-            libc6 \
-            libcairo2 \
-            libcups2t64 \
-            libdbus-1-3 \
-            libexpat1 \
-            libfontconfig1 \
-            libgbm1 \
-            libgcc-s1 \
-            libglib2.0-0t64 \
-            libgtk-3-0t64 \
-            libnspr4 \
-            libnss3 \
-            libpango-1.0-0 \
-            libpangocairo-1.0-0 \
-            libstdc++6 \
-            libx11-6 \
-            libx11-xcb1 \
-            libxcb1 \
-            libxcomposite1 \
-            libxcursor1 \
-            libxdamage1 \
-            libxext6 \
-            libxfixes3 \
-            libxi6 \
-            libxrandr2 \
-            libxrender1 \
-            libxss1 \
-            libxtst6 \
-            xdg-utils
-
-      # =========================================================
-      # 安装 Chrome
-      # =========================================================
-      - name: 安装 Google Chrome
-        run: |
-          wget -q -O /tmp/google-chrome.deb \
-            https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
-
-          sudo dpkg -i /tmp/google-chrome.deb || sudo apt-get install -fy
-
-          google-chrome --version
-
-      # =========================================================
-      # Python 依赖
-      # =========================================================
       - name: 安装 Python 依赖
         run: |
-          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install --upgrade pip
+          pip install DrissionPage xvfbwrapper requests SpeechRecognition pydub
 
-          pip install \
-            DrissionPage==4.1.0.18 \
-            DataRecorder==3.6.2 \
-            DownloadKit \
-            requests \
-            lxml \
-            cssselect \
-            websocket-client \
-            psutil \
-            xvfbwrapper \
-            SpeechRecognition \
-            pydub
-
-      # =========================================================
-      # 启用 WARP
-      # =========================================================
       - name: 启用 WARP 网络
         uses: fscarmen/warp-on-actions@v1.3
         with:
           stack: dual
           mode: client
 
-      # =========================================================
-      # 修复 DNS
-      # =========================================================
       - name: 修复 DNS
         run: |
-          echo "[INFO] 停用 systemd-resolved..."
-
+          echo "[INFO] 停用 systemd-resolved，设置公共 DNS..."
           sudo systemctl stop systemd-resolved 2>/dev/null || true
           sudo systemctl disable systemd-resolved 2>/dev/null || true
 
           sudo rm -f /etc/resolv.conf
+          echo -e "nameserver 1.1.1.1\nnameserver 8.8.8.8\nnameserver 1.0.0.1" | sudo tee /etc/resolv.conf
 
-          echo -e "nameserver 1.1.1.1\nnameserver 8.8.8.8\nnameserver 1.0.0.1" \
-            | sudo tee /etc/resolv.conf
+          sleep 2
 
-          sleep 3
-
-          echo ""
           echo "[INFO] DNS 测试:"
-          nslookup host2play.gratis 1.1.1.1 || true
+          nslookup host2play.gratis 1.1.1.1 || echo "[WARN] 解析失败"
 
           echo ""
           echo "[INFO] 当前出口 IP:"
-          curl -s --max-time 15 https://api.ipify.org && echo
+          curl -s --max-time 10 https://api.ipify.org && echo
+          echo "[INFO] WARP Trace:"
+          curl -s --max-time 10 https://www.cloudflare.com/cdn-cgi/trace | grep -E 'ip=|warp=|loc=' || true
 
-          echo ""
-          echo "[INFO] Cloudflare Trace:"
-          curl -s --max-time 15 https://www.cloudflare.com/cdn-cgi/trace \
-            | grep -E 'ip=|warp=|loc=' || true
-
-      # =========================================================
-      # 创建目录
-      # =========================================================
-      - name: 创建输出目录
-        run: |
-          mkdir -p output/screenshots
-
-      # =========================================================
-      # 执行脚本
-      # =========================================================
       - name: 执行续订
         env:
-          PYTHONUNBUFFERED: 1
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-        run: |
-          python main.py
+        run: python main.py
 
-      # =========================================================
-      # 上传截图
-      # =========================================================
       - name: 上传截图
         if: always()
         uses: actions/upload-artifact@v4
@@ -189,42 +76,6 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
-      # =========================================================
-      # 更新时间文件
-      # =========================================================
-      - name: 更新时间文件
-        if: always()
-        run: |
-          echo "$(date +'%Y-%m-%d %H:%M:%S')" > time.txt
-
-      # =========================================================
-      # Push 更新时间
-      # =========================================================
-      - name: Commit time.txt to repo
-        if: always()
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          git add time.txt
-
-          if git diff --cached --quiet; then
-            echo "无变化，无需提交"
-            exit 0
-          fi
-
-          git commit -m "⏱️ 更新时间文件: $(date +'%Y-%m-%d %H:%M:%S')" || true
-
-          # 防止 schedule 并发导致 push 冲突
-          git pull --rebase origin main || true
-
-          git push origin HEAD:main
-
-      # =========================================================
-      # 清理历史运行记录
-      # =========================================================
       - name: 清理历史运行记录
         if: always()
         uses: Mattraks/delete-workflow-runs@v2
