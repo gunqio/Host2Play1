@@ -1,9 +1,9 @@
-name: Host2Play 续期（最终版）
+name: Host2Play 续期（无错版）
 
 on:
   schedule:
-    - cron: '17 2,14 * * *'   # 每天 2:17、14:17
-    - cron: '43 8,20 * * *'   # 每天 8:43、20:43
+    - cron: '17 2,14 * * *'
+    - cron: '43 8,20 * * *'
   workflow_dispatch:
 
 permissions:
@@ -59,9 +59,9 @@ jobs:
             DownloadKit requests lxml cssselect websocket-client psutil \
             xvfbwrapper SpeechRecognition pydub
 
-      # ---------------- 核心：优先 PROXY_NODE（VLESS/VMess），失败再 WARP ----------------
+      # ---------------- 核心：优先 PROXY_NODE，失败再 WARP ----------------
       - name: 配置外部代理（VLESS/VMess）
-        if: secrets.PROXY_NODE != ''
+        if: ${{ secrets.PROXY_NODE != '' }}
         env:
           PROXY_NODE: ${{ secrets.PROXY_NODE }}
         run: |
@@ -141,11 +141,11 @@ jobs:
             echo "[WARN] 代理重试 $i/5"
             sleep 3
           done
-          echo "[ERROR] ❌ 外部代理失败，将自动走 WARP"
+          echo "[ERROR] ❌ 外部代理失败"
           cat xray.log
+          exit 1
 
       - name: 启用 WARP（备选）
-        if: ${{ secrets.PROXY_NODE == '' || failure() }}
         uses: fscarmen/warp-on-actions@v1.3
         with:
           stack: dual
@@ -168,8 +168,6 @@ jobs:
           PYTHONUNBUFFERED: 1
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          H2P_USER: ${{ secrets.H2P_USER }}
-          H2P_PASS: ${{ secrets.H2P_PASS }}
         run: python main.py
 
       - name: 上传截图
