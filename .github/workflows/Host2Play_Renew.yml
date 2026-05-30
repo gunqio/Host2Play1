@@ -2,8 +2,8 @@ name: Host2Play 续期
 
 on:
   schedule:
-    - cron: '17 2,14 * * *'   # 每天 2:17、14:17（避开整点、随机偏移）
-    - cron: '43 8,20 * * *'   # 每天 8:43、20:43
+    - cron: '17 2,14 * * *'
+    - cron: '43 8,20 * * *'
   workflow_dispatch:
 
 permissions:
@@ -59,22 +59,11 @@ jobs:
             DownloadKit requests lxml cssselect websocket-client psutil \
             xvfbwrapper SpeechRecognition pydub
 
-      # ---------------- 关键：优先用外部代理，没有再用 WARP ----------------
-      - name: 启用 WARP（备选）
-        if: secrets.PROXY_NODE == ''
+      - name: 启用 WARP
         uses: fscarmen/warp-on-actions@v1.3
         with:
           stack: dual
           mode: client
-
-      - name: 配置外部代理（推荐）
-        if: secrets.PROXY_NODE != ''
-        env:
-          PROXY_NODE: ${{ secrets.PROXY_NODE }}
-        run: |
-          echo "PROXY_NODE=$PROXY_NODE" >> $GITHUB_ENV
-          # 这里你可以沿用你之前的 xray/vless/vmess 解析脚本
-          # 我建议统一输出 PROXY_SOCKS5=socks5://127.0.0.1:10808 到 env
 
       - name: 修复 DNS
         run: |
@@ -92,7 +81,7 @@ jobs:
         env:
           PYTHONUNBUFFERED: 1
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
-          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }} 
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
         run: python main.py
 
       - name: 上传截图
