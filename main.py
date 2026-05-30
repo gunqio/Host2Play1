@@ -20,11 +20,11 @@ except ImportError:
 # 配置区域
 # ==============================================================================
 RENEW_URLS = [
-    "https://host2play.gratis/server/renew?i=c0fc7f6b-d143-4cb1-bd49-06593404d2a7",
+    "https://host2play.gratis/server/renew?i=65bd476a-deb6-4585-87fb-7adbe34809e8",
 ]
 
-MAX_CAPTCHA = 2  # 减少尝试，防止被拉黑
-MAX_RENEW_RETRIES_PER_URL = 8  # 智能重试，不是硬冲
+MAX_CAPTCHA = 2
+MAX_RENEW_RETRIES_PER_URL = 8
 
 # ==============================================================================
 # 自定义异常
@@ -130,18 +130,18 @@ def capture_page_screenshot(page, file_name):
         return None
 
 # ==============================================================================
-# WARP 重连（换 IP）
+# WARP 重连（修复：添加 --accept-tos）
 # ==============================================================================
 def restart_warp():
     log("正在重启 WARP 更换 IP...", "WARN")
     try:
-        subprocess.run(["sudo", "warp-cli", "disconnect"], check=False, timeout=15)
+        subprocess.run(["sudo", "warp-cli", "--accept-tos", "disconnect"], check=False, timeout=15)
         time.sleep(2)
-        subprocess.run(["sudo", "warp-cli", "registration", "delete"], check=False, timeout=15)
+        subprocess.run(["sudo", "warp-cli", "--accept-tos", "registration", "delete"], check=False, timeout=15)
         time.sleep(2)
-        subprocess.run(["sudo", "warp-cli", "registration", "new"], check=True, timeout=20)
+        subprocess.run(["sudo", "warp-cli", "--accept-tos", "registration", "new"], check=True, timeout=20)
         time.sleep(2)
-        subprocess.run(["sudo", "warp-cli", "connect"], check=True, timeout=20)
+        subprocess.run(["sudo", "warp-cli", "--accept-tos", "connect"], check=True, timeout=20)
         time.sleep(5)
         new_ip = requests.get("https://api.ipify.org", timeout=8).text.strip()
         log(f"WARP 重启成功，新IP: {new_ip}")
@@ -331,7 +331,7 @@ def solve_recaptcha(page):
     raise RuntimeError("验证码尝试次数超限")
 
 # ==============================================================================
-# 续期逻辑
+# 续期逻辑（修复：删除 add_extension_args）
 # ==============================================================================
 def renew_single_url(url):
     success = False
@@ -360,9 +360,8 @@ def renew_single_url(url):
                 co.auto_port()
                 co.headless(False)
 
-                # 超强反检测
+                # 反检测配置
                 co.set_argument("--disable-blink-features=AutomationControlled")
-                co.add_extension_args("--disable-features=IsolateOrigins,site-per-process")
 
                 page = ChromiumPage(co)
                 page.set.timeouts(20)
