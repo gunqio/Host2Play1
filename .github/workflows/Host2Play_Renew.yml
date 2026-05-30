@@ -2,69 +2,98 @@ name: Host2Play 续期
 
 on:
   schedule:
-    - cron: '30 5,16 * * *'      # 触发点: 05:30, 16:30
+    - cron: '17 2,14 * * *'   # 每天 2:17、14:17（避开整点、随机偏移）
+    - cron: '43 8,20 * * *'   # 每天 8:43、20:43
   workflow_dispatch:
 
 permissions:
   actions: write
-  contents: read
+  contents: write
+
+concurrency:
+  group: host2play-renew
+  cancel-in-progress: false
 
 jobs:
   run-renew:
     name: 执行脚本
     runs-on: ubuntu-latest
+    timeout-minutes: 45
 
     steps:
       - name: 拉取仓库
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: 配置 Python 环境
+      - name: 配置 Python 3.10
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
       - name: 安装系统依赖
         run: |
-          sudo apt-get update
-          sudo apt-get install -y xvfb ffmpeg unzip curl
-          wget -q -O /tmp/google-chrome-stable_current_amd64.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
-          sudo dpkg -i /tmp/google-chrome-stable_current_amd64.deb || sudo apt-get install -f -y
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            xvfb ffmpeg unzip curl wget jq ca-certificates \
+            fonts-liberation libasound2t64 libatk-bridge2.0-0t64 \
+            libatk1.0-0t64 libc6 libcairo2 libcups2t64 libdbus-1-3 \
+            libexpat1 libfontconfig1 libgbm1 libgcc-s1 libglib2.0-0t64 \
+            libgtk-3-0t64 libnspr4 libnss3 libpango-1.0-0 libpangocairo-1.0-0 \
+            libstdc++6 libx11-6 libx11-xcb1 libxcb1 libxcomposite1 \
+            libxcursor1 libxdamage1 libxext6 libxfixes3 libxi6 libxrandr2 \
+            libxrender1 libxss1 libxtst6 xdg-utils
+
+      - name: 安装 Chrome
+        run: |
+          wget -q -O /tmp/chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+          sudo dpkg -i /tmp/chrome.deb || sudo apt-get install -fy -qq
+          google-chrome --version
 
       - name: 安装 Python 依赖
         run: |
-          python -m pip install --upgrade pip
-          pip install DrissionPage xvfbwrapper requests SpeechRecognition pydub
+          python -m pip install --upgrade pip setuptools wheel -qq
+          pip install -qq \
+            DrissionPage==4.1.0.18 \
+            DataRecorder==3.6.2 \
+            DownloadKit requests lxml cssselect websocket-client psutil \
+            xvfbwrapper SpeechRecognition pydub
 
-      - name: 启用 WARP 网络
+      # ---------------- 关键：优先用外部代理，没有再用 WARP ----------------
+      - name: 启用 WARP（备选）
+        if: secrets.PROXY_NODE == ''
         uses: fscarmen/warp-on-actions@v1.3
         with:
           stack: dual
           mode: client
 
+      - name: 配置外部代理（推荐）
+        if: secrets.PROXY_NODE != ''
+        env:
+          PROXY_NODE: ${{ secrets.PROXY_NODE }}
+        run: |
+          echo "PROXY_NODE=$PROXY_NODE" >> $GITHUB_ENV
+          # 这里你可以沿用你之前的 xray/vless/vmess 解析脚本
+          # 我建议统一输出 PROXY_SOCKS5=socks5://127.0.0.1:10808 到 env
+
       - name: 修复 DNS
         run: |
-          echo "[INFO] 停用 systemd-resolved，设置公共 DNS..."
           sudo systemctl stop systemd-resolved 2>/dev/null || true
           sudo systemctl disable systemd-resolved 2>/dev/null || true
-
           sudo rm -f /etc/resolv.conf
-          echo -e "nameserver 1.1.1.1\nnameserver 8.8.8.8\nnameserver 1.0.0.1" | sudo tee /etc/resolv.conf
-
+          echo -e "nameserver 1.1.1.1\nnameserver 8.8.8.8" | sudo tee /etc/resolv.conf
           sleep 2
-
-          echo "[INFO] DNS 测试:"
-          nslookup host2play.gratis 1.1.1.1 || echo "[WARN] 解析失败"
-
-          echo ""
-          echo "[INFO] 当前出口 IP:"
           curl -s --max-time 10 https://api.ipify.org && echo
-          echo "[INFO] WARP Trace:"
-          curl -s --max-time 10 https://www.cloudflare.com/cdn-cgi/trace | grep -E 'ip=|warp=|loc=' || true
+
+      - name: 创建目录
+        run: mkdir -p output/screenshots
 
       - name: 执行续订
         env:
+          PYTHONUNBUFFERED: 1
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          PROXY_SOCKS5: ${{ env.PROXY_SOCKS5 }}
         run: python main.py
 
       - name: 上传截图
@@ -76,7 +105,24 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
-      - name: 清理历史运行记录
+      - name: 更新时间文件
+        if: always()
+        run: echo "$(date +'%Y-%m-%d %H:%M:%S')" > time.txt
+
+      - name: Commit & Push
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add time.txt
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "⏱️ 更新时间: $(date +'%Y-%m-%d %H:%M:%S')" || true
+          git pull --rebase origin main || true
+          git push origin HEAD:main
+
+      - name: 清理历史运行
         if: always()
         uses: Mattraks/delete-workflow-runs@v2
         with:
