@@ -93,7 +93,7 @@ jobs:
           PYTHONUNBUFFERED: 1
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          PROXY_SOCKS5: ${{ env.PROXY_SOCKS5 }}
+         
         run: python main.py
 
       - name: 上传截图
