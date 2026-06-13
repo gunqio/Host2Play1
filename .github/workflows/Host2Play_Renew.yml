@@ -1,7 +1,7 @@
 name: Host2Play 续期（极简无错版）
 
 on:
-  workflow_dispatch:   # 保留这个，给第三方触发用
+  workflow_dispatch:
 
 permissions:
   actions: write
@@ -67,23 +67,28 @@ jobs:
             exit 0
           fi
 
-          # 安装 Xray
           wget -q https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
           unzip -q Xray-linux-64.zip -d xray && chmod +x xray/xray
 
-          # 解析并生成配置
           python3 << 'PYEOF'
           import os, sys, json, base64
           from urllib.parse import parse_qs, unquote
+
           url = os.environ.get("PROXY_NODE", "").strip()
           if not url:
-              print("PROXY_NODE 为空")
               sys.exit(1)
+
           config = {
               "log": {"loglevel": "warning"},
-              "inbounds": [{"port": 10808, "listen": "127.0.0.1", "protocol": "socks", "settings": {"udp": True}}],
+              "inbounds": [{
+                  "port": 10808,
+                  "listen": "127.0.0.1",
+                  "protocol": "socks",
+                  "settings": {"udp": True}
+              }],
               "outbounds": []
           }
+
           if url.startswith("vless://"):
               protocol = "vless"
               content = url[8:]
@@ -91,105 +96,119 @@ jobs:
               protocol = "vmess"
               content = url[8:]
           else:
-              print("不支持的协议")
               sys.exit(1)
+
           if "#" in content:
               content = content.rsplit("#", 1)[0]
+
           if protocol == "vless":
               uuid, rest = content.split("@", 1)
-              if "?" in rest:
-                  host_port, params_str = rest.split("?", 1)
-              else:
-                  host_port, params_str = rest, ""
-              if ":" in host_port:
-                  address, port = host_port.rsplit(":", 1)
-              else:
-                  address, port = host_port, "443"
+              host_port, params_str = (rest.split("?", 1) + [""])[:2]
+              address, port = (host_port.split(":") + ["443"])[:2]
+
               params = parse_qs(params_str)
               security = params.get("security", ["none"])[0]
               network = params.get("type", ["tcp"])[0]
               sni = params.get("sni", [address])[0]
-              fp = params.get("fp", ["chrome"])[0]
               host = params.get("host", [sni])[0]
               path = unquote(params.get("path", ["/"])[0])
+
               outbound = {
                   "protocol": "vless",
-                  "settings": {"vnext": [{"address": address, "port": int(port), "users": [{"id": uuid, "encryption": "none"}]}]},
-                  "streamSettings": {"network": network, "security": security}
+                  "settings": {
+                      "vnext": [{
+                          "address": address,
+                          "port": int(port),
+                          "users": [{"id": uuid, "encryption": "none"}]
+                      }]
+                  },
+                  "streamSettings": {
+                      "network": network,
+                      "security": security
+                  }
               }
+
               if security == "tls":
-                  outbound["streamSettings"]["tlsSettings"] = {"serverName": sni, "fingerprint": fp, "allowInsecure": False}
+                  outbound["streamSettings"]["tlsSettings"] = {
+                      "serverName": sni,
+                      "allowInsecure": False
+                  }
+
               if network == "ws":
-                  outbound["streamSettings"]["wsSettings"] = {"path": path, "headers": {"Host": host}}
+                  outbound["streamSettings"]["wsSettings"] = {
+                      "path": path,
+                      "headers": {"Host": host}
+                  }
+
               config["outbounds"].append(outbound)
+
           elif protocol == "vmess":
               padding = 4 - len(content) % 4
               if padding != 4:
                   content += "=" * padding
-              decoded = base64.b64decode(content).decode("utf-8")
+
+              decoded = base64.b64decode(content).decode()
               vm = json.loads(decoded)
-              address = vm.get("add", "")
-              port = int(vm.get("port", 443))
-              uuid = vm.get("id", "")
-              aid = int(vm.get("aid", 0))
-              network = vm.get("net", "tcp")
-              tls = vm.get("tls", "")
-              sni = vm.get("sni", "") or vm.get("host", address)
-              host = vm.get("host", address)
-              path = vm.get("path", "/")
-              fp = vm.get("fp", "chrome")
+
               outbound = {
                   "protocol": "vmess",
-                  "settings": {"vnext": [{"address": address, "port": port, "users": [{"id": uuid, "alterId": aid, "security": "auto"}]}]},
-                  "streamSettings": {"network": network, "security": "tls" if tls == "tls" else "none"}
+                  "settings": {
+                      "vnext": [{
+                          "address": vm.get("add"),
+                          "port": int(vm.get("port", 443)),
+                          "users": [{
+                              "id": vm.get("id"),
+                              "alterId": int(vm.get("aid", 0)),
+                              "security": "auto"
+                          }]
+                      }]
+                  },
+                  "streamSettings": {
+                      "network": vm.get("net", "tcp"),
+                      "security": "tls" if vm.get("tls") else "none"
+                  }
               }
-              if tls == "tls":
-                  outbound["streamSettings"]["tlsSettings"] = {"serverName": sni, "fingerprint": fp, "allowInsecure": False}
-              if network == "ws":
-                  outbound["streamSettings"]["wsSettings"] = {"path": path, "headers": {"Host": host}}
+
               config["outbounds"].append(outbound)
+
           with open("xray_config.json", "w") as f:
               json.dump(config, f, indent=2)
           PYEOF
 
-          # 启动 Xray
           ./xray/xray run -c xray_config.json > xray.log 2>&1 &
           sleep 5
 
-          # 测试代理
           for i in {1..5}; do
-            if curl -x socks5://127.0.0.1:10808 -s --max-time 15 https://api.ipify.org; then
-              echo "PROXY_SOCKS5=socks5://127.0.0.1:10808" >> $GITHUB_ENV
-              echo "[INFO] ✅ 外部代理启动成功"
+            if curl -x socks5://127.0.0.1:10808 -s https://api.ipify.org; then
+              echo "PROXY_SOCKS5=127.0.0.1:10808" >> $GITHUB_ENV
+              echo "[INFO] 代理启动成功"
               exit 0
             fi
-            echo "[WARN] 代理连接失败，重试 $i/5"
             sleep 3
           done
 
-          echo "[ERROR] ❌ 外部代理启动失败，将自动使用 WARP"
+          echo "[ERROR] 外部代理失败"
           exit 1
 
-      # ---------------- 2. 外部代理失败，启用 WARP ----------------
-      - name: 启用 WARP（备选）
+      # ---------------- 2. WARP fallback（修复版，无 warp-cli 依赖） ----------------
+      - name: 启用 WARP（备用）
         uses: fscarmen/warp-on-actions@v1.3
         if: failure()
         with:
           stack: dual
           mode: client
 
+      # ---------------- 3. DNS 修复 ----------------
       - name: 修复 DNS
         run: |
-          sudo systemctl stop systemd-resolved 2>/dev/null || true
-          sudo systemctl disable systemd-resolved 2>/dev/null || true
           sudo rm -f /etc/resolv.conf
           echo -e "nameserver 1.1.1.1\nnameserver 8.8.8.8" | sudo tee /etc/resolv.conf
-          sleep 2
-          curl -s --max-time 10 https://api.ipify.org && echo
+          curl -s https://api.ipify.org
 
       - name: 创建目录
         run: mkdir -p output/screenshots
 
+      # ---------------- 4. 执行脚本 ----------------
       - name: 执行续订
         env:
           PYTHONUNBUFFERED: 1
@@ -197,6 +216,7 @@ jobs:
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
         run: python main.py
 
+      # ---------------- 5. 上传截图 ----------------
       - name: 上传截图
         if: always()
         uses: actions/upload-artifact@v4
@@ -206,10 +226,12 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+      # ---------------- 6. 时间记录 ----------------
       - name: 更新时间文件
         if: always()
         run: echo "$(date +'%Y-%m-%d %H:%M:%S')" > time.txt
 
+      # ---------------- 7. commit ----------------
       - name: Commit & Push
         if: always()
         env:
@@ -218,11 +240,11 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add time.txt
-          if git diff --cached --quiet; then exit 0; fi
-          git commit -m "⏱️ 更新时间: $(date +'%Y-%m-%d %H:%M:%S')" || true
+          git commit -m "⏱️ 更新时间" || true
           git pull --rebase origin main || true
           git push origin HEAD:main
 
+      # ---------------- 8. 清理 ----------------
       - name: 清理历史运行
         if: always()
         uses: Mattraks/delete-workflow-runs@v2
