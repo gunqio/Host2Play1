@@ -178,6 +178,15 @@ jobs:
           stack: dual
           mode: client
 
+      # ---------------- 3. 安装 wgcf（供脚本换 IP 使用） ----------------
+      - name: 安装 wgcf（脚本换 IP 需要）
+        if: failure()
+        run: |
+          curl -sL https://github.com/ArchiveNetwork/wgcf-cli/releases/latest/download/wgcf -o wgcf
+          chmod +x wgcf
+          sudo mv wgcf /usr/local/bin
+          echo "[INFO] wgcf 安装完成"
+
       - name: 修复 DNS
         run: |
           sudo systemctl stop systemd-resolved 2>/dev/null || true
