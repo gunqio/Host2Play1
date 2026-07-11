@@ -92,9 +92,7 @@ jobs:
               insecure = q.get("insecure", ["0"])[0]
               if insecure == "1":
                   tls["insecure"] = True
-              fp = q.get("fp", [""])[0]
-              if fp:
-                  tls["utls"] = {"enabled": True, "fingerprint": fp}
+              # 注意：go install 默认编译不含 uTLS，所以不添加 utls 字段
               outbound["tls"] = tls
 
           config = {
