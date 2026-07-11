@@ -42,23 +42,97 @@ jobs:
 
       - name: 安装并启动 sing-box 代理
         env:
-          SING_BOX_CONFIG: ${{ secrets.SING_BOX_CONFIG }}
+          VLESS_URL: ${{ secrets.SING_BOX_CONFIG }}
         run: |
           echo "[INFO] 通过 go install 安装 sing-box..."
           go install -v github.com/sagernet/sing-box/cmd/sing-box@latest
-          
           export PATH=$PATH:$HOME/go/bin
-          echo "[INFO] sing-box 版本:"
           sing-box version || { echo "[ERROR] sing-box 安装失败"; exit 1; }
 
-          echo "[INFO] 写入 sing-box 配置..."
-          echo "$SING_BOX_CONFIG" | base64 -d > /tmp/sing-box-config.json
-          
-          echo "[INFO] 验证配置..."
-          sing-box check -c /tmp/sing-box-config.json || {
-            echo "[ERROR] 配置验证失败"
-            exit 1
+          echo "[INFO] 解析 vless 链接并生成 sing-box 配置..."
+          python3 << 'PYEOF'
+          import urllib.parse, json, os
+
+          vless = os.getenv("VLESS_URL", "").strip()
+          if not vless.startswith("vless://"):
+              print("[ERROR] SING_BOX_CONFIG 不是有效的 vless:// 链接")
+              exit(1)
+
+          parsed = urllib.parse.urlparse(vless)
+          uuid = parsed.username
+          host = parsed.hostname
+          port = parsed.port
+          q = urllib.parse.parse_qs(parsed.query)
+
+          # 构建 sing-box outbound
+          outbound = {
+              "type": "vless",
+              "tag": "proxy",
+              "server": host,
+              "server_port": port,
+              "uuid": uuid,
           }
+
+          # transport (ws/tcp/grpc 等)
+          t = q.get("type", ["tcp"])[0]
+          if t and t != "tcp":
+              transport = {"type": t}
+              path = q.get("path", [""])[0]
+              if path:
+                  transport["path"] = urllib.parse.unquote(path)
+              host_hdr = q.get("host", [""])[0]
+              if host_hdr:
+                  transport["headers"] = {"Host": host_hdr}
+              outbound["transport"] = transport
+
+          # tls
+          security = q.get("security", [""])[0]
+          if security == "tls" or security == "reality":
+              tls = {"enabled": True}
+              sni = q.get("sni", [""])[0] or host
+              if sni:
+                  tls["server_name"] = sni
+              insecure = q.get("insecure", ["0"])[0]
+              if insecure == "1":
+                  tls["insecure"] = True
+              fp = q.get("fp", [""])[0]
+              if fp:
+                  tls["utls"] = {"enabled": True, "fingerprint": fp}
+              outbound["tls"] = tls
+
+          config = {
+              "log": {"level": "info", "timestamp": True},
+              "dns": {
+                  "servers": [
+                      {"tag": "google", "address": "tls://8.8.8.8"},
+                      {"tag": "local", "address": "local", "detour": "direct"}
+                  ],
+                  "final": "google"
+              },
+              "inbounds": [
+                  {
+                      "type": "mixed",
+                      "tag": "mixed-in",
+                      "listen": "127.0.0.1",
+                      "listen_port": 2080
+                  }
+              ],
+              "outbounds": [outbound, {"type": "direct", "tag": "direct"}],
+              "route": {
+                  "rules": [{"geoip": "private", "outbound": "direct"}],
+                  "final": "proxy",
+                  "auto_detect_interface": True
+              }
+          }
+
+          with open("/tmp/sing-box-config.json", "w") as f:
+              json.dump(config, f, indent=2)
+          print("[INFO] sing-box 配置已生成")
+          print(json.dumps(config, indent=2))
+          PYEOF
+
+          echo "[INFO] 验证配置..."
+          sing-box check -c /tmp/sing-box-config.json || { echo "[ERROR] 配置验证失败"; exit 1; }
 
           echo "[INFO] 启动 sing-box..."
           nohup sing-box run -c /tmp/sing-box-config.json > /tmp/sing-box.log 2>&1 &
