@@ -13,8 +13,15 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: 拉取仓库
+      - name: 拉取当前仓库
         uses: actions/checkout@v4
+
+      - name: 拉取私库 zhiyong
+        uses: actions/checkout@v4
+        with:
+          repository: gunqio/zhiyong
+          token: ${{ secrets.GH_PAT }}
+          path: zhiyong
 
       - name: 配置 Python 环境
         uses: actions/setup-python@v5
@@ -68,7 +75,7 @@ jobs:
           HTTP_PROXY: http://127.0.0.1:2080
           HTTPS_PROXY: http://127.0.0.1:2080
           NO_PROXY: localhost,127.0.0.1
-        run: python Host2Play.py
+        run: python zhiyong/Host2Play.py
 
       - name: 上传截图
         if: always()
