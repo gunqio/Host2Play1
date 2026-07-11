@@ -31,7 +31,7 @@ jobs:
       - name: 安装系统依赖
         run: |
           sudo apt-get update
-          sudo apt-get install -y xvfb ffmpeg unzip curl
+          sudo apt-get install -y xvfb ffmpeg unzip curl golang-go
           wget -q -O /tmp/google-chrome-stable_current_amd64.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
           sudo dpkg -i /tmp/google-chrome-stable_current_amd64.deb || sudo apt-get install -f -y
 
@@ -44,64 +44,19 @@ jobs:
         env:
           SING_BOX_CONFIG: ${{ secrets.SING_BOX_CONFIG }}
         run: |
-          echo "[INFO] 下载最新版 sing-box..."
+          echo "[INFO] 通过 go install 安装 sing-box..."
+          go install -v github.com/sagernet/sing-box/cmd/sing-box@latest
           
-          # 方法1：用 GitHub API 获取最新版本
-          LATEST=$(curl -sL --max-time 15 https://api.github.com/repos/SagerNet/sing-box/releases/latest | grep -oP '"tag_name":\s*"\K[^"]+' || true)
-          
-          # 方法2：如果 API 失败，用固定版本兜底
-          if [ -z "$LATEST" ]; then
-            echo "[WARN] GitHub API 获取版本失败，使用固定版本 v1.13.14"
-            LATEST="v1.13.14"
-          fi
-          
-          echo "[INFO] sing-box 版本: $LATEST"
-          
-          ARCH="amd64"
-          URL="https://github.com/SagerNet/sing-box/releases/download/${LATEST}/sing-box-${LATEST}-linux-${ARCH}.tar.gz"
-          echo "[INFO] 下载地址: $URL"
-          
-          # 下载，带重试
-          for i in 1 2 3; do
-            echo "[INFO] 下载尝试 $i/3..."
-            if wget -q --timeout=60 -O /tmp/sing-box.tar.gz "$URL"; then
-              echo "[INFO] 下载成功"
-              break
-            else
-              echo "[WARN] 下载失败，等待重试..."
-              sleep 5
-            fi
-          done
-          
-          if [ ! -f /tmp/sing-box.tar.gz ] || [ ! -s /tmp/sing-box.tar.gz ]; then
-            echo "[ERROR] sing-box 下载失败，尝试备用镜像..."
-            wget -q --timeout=60 -O /tmp/sing-box.tar.gz "https://github.com/SagerNet/sing-box/releases/download/v1.13.14/sing-box-v1.13.14-linux-amd64.tar.gz" || {
-              echo "[ERROR] 备用下载也失败，退出"
-              exit 1
-            }
-          fi
-          
-          echo "[INFO] 解压 sing-box..."
-          tar -xzf /tmp/sing-box.tar.gz -C /tmp
-          
-          echo "[INFO] 安装 sing-box..."
-          SING_BIN=$(find /tmp -name "sing-box" -type f | head -1)
-          if [ -z "$SING_BIN" ]; then
-            echo "[ERROR] 未找到 sing-box 可执行文件"
-            exit 1
-          fi
-          sudo mv "$SING_BIN" /usr/local/bin/sing-box
-          sudo chmod +x /usr/local/bin/sing-box
-          
-          echo "[INFO] sing-box 版本信息:"
-          sing-box version || true
+          export PATH=$PATH:$HOME/go/bin
+          echo "[INFO] sing-box 版本:"
+          sing-box version || { echo "[ERROR] sing-box 安装失败"; exit 1; }
 
           echo "[INFO] 写入 sing-box 配置..."
           echo "$SING_BOX_CONFIG" | base64 -d > /tmp/sing-box-config.json
           
-          echo "[INFO] 验证 sing-box 配置..."
+          echo "[INFO] 验证配置..."
           sing-box check -c /tmp/sing-box-config.json || {
-            echo "[ERROR] sing-box 配置验证失败"
+            echo "[ERROR] 配置验证失败"
             exit 1
           }
 
@@ -113,8 +68,11 @@ jobs:
           ps aux | grep sing-box | grep -v grep || true
 
           echo "[INFO] 测试代理连通性..."
-          curl -s --max-time 15 -x http://127.0.0.1:2080 https://api.ipify.org && echo || echo "[WARN] 代理测试失败，查看日志:"
-          cat /tmp/sing-box.log || true
+          curl -s --max-time 15 -x http://127.0.0.1:2080 https://api.ipify.org && echo || {
+            echo "[WARN] 代理测试失败，查看日志:"
+            cat /tmp/sing-box.log
+            exit 1
+          }
 
       - name: 执行续订
         env:
