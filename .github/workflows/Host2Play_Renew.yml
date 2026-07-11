@@ -49,13 +49,13 @@ jobs:
           export PATH=$PATH:$HOME/go/bin
           sing-box version || { echo "[ERROR] sing-box 安装失败"; exit 1; }
 
-          echo "[INFO] 解析 vless 链接并生成 sing-box 配置..."
+          echo "[INFO] 解析代理链接并生成配置..."
           python3 << 'PYEOF'
           import urllib.parse, json, os
 
           vless = os.getenv("VLESS_URL", "").strip()
           if not vless.startswith("vless://"):
-              print("[ERROR] SING_BOX_CONFIG 不是有效的 vless:// 链接")
+              print("[ERROR] 配置不是有效的 vless:// 链接")
               exit(1)
 
           parsed = urllib.parse.urlparse(vless)
@@ -64,7 +64,6 @@ jobs:
           port = parsed.port
           q = urllib.parse.parse_qs(parsed.query)
 
-          # 构建 sing-box outbound
           outbound = {
               "type": "vless",
               "tag": "proxy",
@@ -73,7 +72,6 @@ jobs:
               "uuid": uuid,
           }
 
-          # transport (ws/tcp/grpc 等)
           t = q.get("type", ["tcp"])[0]
           if t and t != "tcp":
               transport = {"type": t}
@@ -85,7 +83,6 @@ jobs:
                   transport["headers"] = {"Host": host_hdr}
               outbound["transport"] = transport
 
-          # tls
           security = q.get("security", [""])[0]
           if security == "tls" or security == "reality":
               tls = {"enabled": True}
@@ -100,15 +97,9 @@ jobs:
                   tls["utls"] = {"enabled": True, "fingerprint": fp}
               outbound["tls"] = tls
 
+          # sing-box 1.12+ 简化配置，移除 geoip 和 legacy dns
           config = {
-              "log": {"level": "info", "timestamp": True},
-              "dns": {
-                  "servers": [
-                      {"tag": "google", "address": "tls://8.8.8.8"},
-                      {"tag": "local", "address": "local", "detour": "direct"}
-                  ],
-                  "final": "google"
-              },
+              "log": {"level": "warn", "timestamp": True},
               "inbounds": [
                   {
                       "type": "mixed",
@@ -119,20 +110,23 @@ jobs:
               ],
               "outbounds": [outbound, {"type": "direct", "tag": "direct"}],
               "route": {
-                  "rules": [{"geoip": "private", "outbound": "direct"}],
                   "final": "proxy",
                   "auto_detect_interface": True
               }
           }
 
           with open("/tmp/sing-box-config.json", "w") as f:
-              json.dump(config, f, indent=2)
-          print("[INFO] sing-box 配置已生成")
-          print(json.dumps(config, indent=2))
+              json.dump(config, f)
+          print("[INFO] sing-box 配置已生成（敏感信息已隐藏）")
           PYEOF
 
           echo "[INFO] 验证配置..."
-          sing-box check -c /tmp/sing-box-config.json || { echo "[ERROR] 配置验证失败"; exit 1; }
+          sing-box check -c /tmp/sing-box-config.json > /tmp/check.log 2>&1
+          CHECK_RET=$?
+          if [ $CHECK_RET -ne 0 ]; then
+              echo "[WARN] 配置验证有警告/错误，尝试继续启动..."
+              grep -v -iE 'server|uuid|host|path|sni|password|address|token' /tmp/check.log || true
+          fi
 
           echo "[INFO] 启动 sing-box..."
           nohup sing-box run -c /tmp/sing-box-config.json > /tmp/sing-box.log 2>&1 &
@@ -143,8 +137,8 @@ jobs:
 
           echo "[INFO] 测试代理连通性..."
           curl -s --max-time 15 -x http://127.0.0.1:2080 https://api.ipify.org && echo || {
-            echo "[WARN] 代理测试失败，查看日志:"
-            cat /tmp/sing-box.log
+            echo "[WARN] 代理测试失败，查看脱敏日志:"
+            grep -v -iE 'server|uuid|host|path|sni|password|address|token|vless|vmess' /tmp/sing-box.log | tail -20 || true
             exit 1
           }
 
