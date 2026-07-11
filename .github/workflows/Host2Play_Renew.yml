@@ -45,17 +45,65 @@ jobs:
           SING_BOX_CONFIG: ${{ secrets.SING_BOX_CONFIG }}
         run: |
           echo "[INFO] 下载最新版 sing-box..."
-          LATEST=$(curl -sL --max-time 10 https://api.github.com/repos/SagerNet/sing-box/releases/latest | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p')
+          
+          # 方法1：用 GitHub API 获取最新版本
+          LATEST=$(curl -sL --max-time 15 https://api.github.com/repos/SagerNet/sing-box/releases/latest | grep -oP '"tag_name":\s*"\K[^"]+' || true)
+          
+          # 方法2：如果 API 失败，用固定版本兜底
+          if [ -z "$LATEST" ]; then
+            echo "[WARN] GitHub API 获取版本失败，使用固定版本 v1.13.14"
+            LATEST="v1.13.14"
+          fi
+          
+          echo "[INFO] sing-box 版本: $LATEST"
+          
           ARCH="amd64"
           URL="https://github.com/SagerNet/sing-box/releases/download/${LATEST}/sing-box-${LATEST}-linux-${ARCH}.tar.gz"
-          wget -q --timeout=30 -O /tmp/sing-box.tar.gz "$URL"
+          echo "[INFO] 下载地址: $URL"
+          
+          # 下载，带重试
+          for i in 1 2 3; do
+            echo "[INFO] 下载尝试 $i/3..."
+            if wget -q --timeout=60 -O /tmp/sing-box.tar.gz "$URL"; then
+              echo "[INFO] 下载成功"
+              break
+            else
+              echo "[WARN] 下载失败，等待重试..."
+              sleep 5
+            fi
+          done
+          
+          if [ ! -f /tmp/sing-box.tar.gz ] || [ ! -s /tmp/sing-box.tar.gz ]; then
+            echo "[ERROR] sing-box 下载失败，尝试备用镜像..."
+            wget -q --timeout=60 -O /tmp/sing-box.tar.gz "https://github.com/SagerNet/sing-box/releases/download/v1.13.14/sing-box-v1.13.14-linux-amd64.tar.gz" || {
+              echo "[ERROR] 备用下载也失败，退出"
+              exit 1
+            }
+          fi
+          
+          echo "[INFO] 解压 sing-box..."
           tar -xzf /tmp/sing-box.tar.gz -C /tmp
-          sudo mv /tmp/sing-box-*/sing-box /usr/local/bin/sing-box
+          
+          echo "[INFO] 安装 sing-box..."
+          SING_BIN=$(find /tmp -name "sing-box" -type f | head -1)
+          if [ -z "$SING_BIN" ]; then
+            echo "[ERROR] 未找到 sing-box 可执行文件"
+            exit 1
+          fi
+          sudo mv "$SING_BIN" /usr/local/bin/sing-box
           sudo chmod +x /usr/local/bin/sing-box
-          sing-box version
+          
+          echo "[INFO] sing-box 版本信息:"
+          sing-box version || true
 
           echo "[INFO] 写入 sing-box 配置..."
           echo "$SING_BOX_CONFIG" | base64 -d > /tmp/sing-box-config.json
+          
+          echo "[INFO] 验证 sing-box 配置..."
+          sing-box check -c /tmp/sing-box-config.json || {
+            echo "[ERROR] sing-box 配置验证失败"
+            exit 1
+          }
 
           echo "[INFO] 启动 sing-box..."
           nohup sing-box run -c /tmp/sing-box-config.json > /tmp/sing-box.log 2>&1 &
@@ -65,7 +113,7 @@ jobs:
           ps aux | grep sing-box | grep -v grep || true
 
           echo "[INFO] 测试代理连通性..."
-          curl -s --max-time 10 -x http://127.0.0.1:2080 https://api.ipify.org && echo || echo "[WARN] 代理测试失败，查看日志:"
+          curl -s --max-time 15 -x http://127.0.0.1:2080 https://api.ipify.org && echo || echo "[WARN] 代理测试失败，查看日志:"
           cat /tmp/sing-box.log || true
 
       - name: 执行续订
