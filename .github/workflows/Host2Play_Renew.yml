@@ -42,57 +42,48 @@ jobs:
 
       - name: 安装并启动 sing-box 代理
         env:
-          VLESS_URL: ${{ secrets.SING_BOX_CONFIG }}
+          SUB_URL: ${{ secrets.SING_BOX_CONFIG }}
         run: |
           echo "[INFO] 通过 go install 安装 sing-box..."
           go install -v github.com/sagernet/sing-box/cmd/sing-box@latest
           export PATH=$PATH:$HOME/go/bin
           sing-box version || { echo "[ERROR] sing-box 安装失败"; exit 1; }
 
-          echo "[INFO] 解析代理链接并生成配置..."
+          echo "[INFO] 下载订阅并生成配置..."
           python3 << 'PYEOF'
-          import urllib.parse, json, os
+          import urllib.request, urllib.parse, json, os, base64
 
-          vless = os.getenv("VLESS_URL", "").strip()
-          if not vless.startswith("vless://"):
-              print("[ERROR] 配置不是有效的 vless:// 链接")
+          sub_url = os.getenv("SUB_URL", "").strip()
+          if not sub_url.startswith("http"):
+              print("[ERROR] SING_BOX_CONFIG 不是有效的订阅链接")
               exit(1)
 
-          parsed = urllib.parse.urlparse(vless)
-          uuid = parsed.username
-          host = parsed.hostname
-          port = parsed.port
-          q = urllib.parse.parse_qs(parsed.query)
+          req = urllib.request.Request(sub_url, headers={
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+          })
+          try:
+              with urllib.request.urlopen(req, timeout=30) as resp:
+                  sub_content = resp.read()
+          except Exception as e:
+              print(f"[ERROR] 订阅下载失败: {e}")
+              exit(1)
 
-          outbound = {
-              "type": "vless",
-              "tag": "proxy",
-              "server": host,
-              "server_port": port,
-              "uuid": uuid,
-          }
+          try:
+              decoded = base64.b64decode(sub_content).decode('utf-8')
+              nodes = [line.strip() for line in decoded.splitlines() if line.strip()]
+          except Exception:
+              try:
+                  text = sub_content.decode('utf-8')
+                  nodes = [line.strip() for line in text.splitlines() if line.strip()]
+              except Exception as e:
+                  print(f"[ERROR] 订阅解析失败: {e}")
+                  exit(1)
 
-          t = q.get("type", ["tcp"])[0]
-          if t and t != "tcp":
-              transport = {"type": t}
-              path = q.get("path", [""])[0]
-              if path:
-                  transport["path"] = urllib.parse.unquote(path)
-              host_hdr = q.get("host", [""])[0]
-              if host_hdr:
-                  transport["headers"] = {"Host": host_hdr}
-              outbound["transport"] = transport
+          if not nodes:
+              print("[ERROR] 订阅中没有节点")
+              exit(1)
 
-          security = q.get("security", [""])[0]
-          if security == "tls" or security == "reality":
-              tls = {"enabled": True}
-              sni = q.get("sni", [""])[0] or host
-              if sni:
-                  tls["server_name"] = sni
-              insecure = q.get("insecure", ["0"])[0]
-              if insecure == "1":
-                  tls["insecure"] = True
-              outbound["tls"] = tls
+          print(f"[INFO] 订阅包含 {len(nodes)} 个节点")
 
           config = {
               "log": {"level": "warn", "timestamp": True},
@@ -104,16 +95,115 @@ jobs:
                       "listen_port": 2080
                   }
               ],
-              "outbounds": [outbound, {"type": "direct", "tag": "direct"}],
+              "outbounds": [
+                  {
+                      "type": "selector",
+                      "tag": "proxy",
+                      "outbounds": ["auto"],
+                      "default": "auto"
+                  },
+                  {
+                      "type": "urltest",
+                      "tag": "auto",
+                      "outbounds": [],
+                      "url": "http://www.gstatic.com/generate_204",
+                      "interval": "1m",
+                      "tolerance": 50
+                  },
+                  {"type": "direct", "tag": "direct"}
+              ],
               "route": {
                   "final": "proxy",
                   "auto_detect_interface": True
               }
           }
 
+          node_tags = []
+          for i, node in enumerate(nodes):
+              tag = f"node-{i+1}"
+              node_tags.append(tag)
+              
+              if node.startswith("vless://"):
+                  parsed = urllib.parse.urlparse(node)
+                  uuid = parsed.username
+                  host = parsed.hostname
+                  port = parsed.port or 443
+                  q = urllib.parse.parse_qs(parsed.query)
+                  
+                  outbound = {
+                      "type": "vless",
+                      "tag": tag,
+                      "server": host,
+                      "server_port": port,
+                      "uuid": uuid,
+                  }
+                  
+                  t = q.get("type", ["tcp"])[0]
+                  if t and t != "tcp":
+                      transport = {"type": t}
+                      path = q.get("path", [""])[0]
+                      if path:
+                          transport["path"] = urllib.parse.unquote(path)
+                      host_hdr = q.get("host", [""])[0]
+                      if host_hdr:
+                          transport["headers"] = {"Host": host_hdr}
+                      outbound["transport"] = transport
+                  
+                  security = q.get("security", [""])[0]
+                  if security == "tls" or security == "reality":
+                      tls = {"enabled": True}
+                      sni = q.get("sni", [""])[0] or host
+                      if sni:
+                          tls["server_name"] = sni
+                      insecure = q.get("insecure", ["0"])[0]
+                      if insecure == "1":
+                          tls["insecure"] = True
+                      outbound["tls"] = tls
+                  
+                  config["outbounds"].append(outbound)
+                  
+              elif node.startswith("vmess://"):
+                  try:
+                      vmess_json = base64.b64decode(node.replace("vmess://", "")).decode('utf-8')
+                      vmess_cfg = json.loads(vmess_json)
+                      outbound = {
+                          "type": "vmess",
+                          "tag": tag,
+                          "server": vmess_cfg.get("add", ""),
+                          "server_port": int(vmess_cfg.get("port", 443)),
+                          "uuid": vmess_cfg.get("id", ""),
+                          "security": vmess_cfg.get("scy", "auto"),
+                      }
+                      if vmess_cfg.get("tls") == "tls":
+                          outbound["tls"] = {
+                              "enabled": True,
+                              "server_name": vmess_cfg.get("sni", vmess_cfg.get("add", ""))
+                          }
+                      if vmess_cfg.get("net") and vmess_cfg.get("net") != "tcp":
+                          outbound["transport"] = {
+                              "type": vmess_cfg.get("net"),
+                              "path": vmess_cfg.get("path", ""),
+                          }
+                          if vmess_cfg.get("host"):
+                              outbound["transport"]["headers"] = {"Host": vmess_cfg.get("host")}
+                      config["outbounds"].append(outbound)
+                  except Exception as e:
+                      print(f"[WARN] 节点 {i+1} 解析失败: {e}")
+                      continue
+              else:
+                  print(f"[WARN] 不支持的节点格式: {node[:50]}...")
+                  continue
+
+          if not node_tags:
+              print("[ERROR] 没有成功解析的节点")
+              exit(1)
+
+          config["outbounds"][1]["outbounds"] = node_tags
+          config["outbounds"][0]["outbounds"] = ["auto"] + node_tags
+
           with open("/tmp/sing-box-config.json", "w") as f:
-              json.dump(config, f)
-          print("[INFO] sing-box 配置已生成")
+              json.dump(config, f, indent=2)
+          print(f"[INFO] sing-box 配置已生成，包含 {len(node_tags)} 个节点")
           PYEOF
 
           echo "[INFO] 启动 sing-box..."
