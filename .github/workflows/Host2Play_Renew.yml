@@ -68,7 +68,7 @@ jobs:
           HTTP_PROXY: http://127.0.0.1:2080
           HTTPS_PROXY: http://127.0.0.1:2080
           NO_PROXY: localhost,127.0.0.1
-        run: python main.py
+        run: python Host2Play.py
 
       - name: 上传截图
         if: always()
