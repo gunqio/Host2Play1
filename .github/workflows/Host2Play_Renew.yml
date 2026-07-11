@@ -97,7 +97,6 @@ jobs:
                   tls["utls"] = {"enabled": True, "fingerprint": fp}
               outbound["tls"] = tls
 
-          # sing-box 1.12+ 简化配置，移除 geoip 和 legacy dns
           config = {
               "log": {"level": "warn", "timestamp": True},
               "inbounds": [
@@ -117,16 +116,8 @@ jobs:
 
           with open("/tmp/sing-box-config.json", "w") as f:
               json.dump(config, f)
-          print("[INFO] sing-box 配置已生成（敏感信息已隐藏）")
+          print("[INFO] sing-box 配置已生成")
           PYEOF
-
-          echo "[INFO] 验证配置..."
-          sing-box check -c /tmp/sing-box-config.json > /tmp/check.log 2>&1
-          CHECK_RET=$?
-          if [ $CHECK_RET -ne 0 ]; then
-              echo "[WARN] 配置验证有警告/错误，尝试继续启动..."
-              grep -v -iE 'server|uuid|host|path|sni|password|address|token' /tmp/check.log || true
-          fi
 
           echo "[INFO] 启动 sing-box..."
           nohup sing-box run -c /tmp/sing-box-config.json > /tmp/sing-box.log 2>&1 &
@@ -138,7 +129,7 @@ jobs:
           echo "[INFO] 测试代理连通性..."
           curl -s --max-time 15 -x http://127.0.0.1:2080 https://api.ipify.org && echo || {
             echo "[WARN] 代理测试失败，查看脱敏日志:"
-            grep -v -iE 'server|uuid|host|path|sni|password|address|token|vless|vmess' /tmp/sing-box.log | tail -20 || true
+            grep -v -iE 'server|uuid|host|path|sni|password|address|token|vless|vmess|turn@' /tmp/sing-box.log | tail -20 || true
             exit 1
           }
 
